@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>いえらぶクラウド 消し込みCSV変換ツール</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Hiragino Sans", "Meiryo", sans-serif;
+      background: #f4f6f9;
+      color: #333;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 32px;
+    }
+    header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1a3a5c;
+      letter-spacing: 0.04em;
+    }
+    header p {
+      font-size: 13px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 32px;
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 24px;
+    }
+
+    /* ---- ドロップゾーン ---- */
+    #drop-zone {
+      border: 2px dashed #4a90d9;
+      border-radius: 8px;
+      background: #f0f7ff;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: background .2s, border-color .2s;
+      position: relative;
+    }
+    #drop-zone.dragover {
+      background: #dbeeff;
+      border-color: #1a6ac9;
+    }
+    #drop-zone .icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+      color: #4a90d9;
+      line-height: 1;
+    }
+    #drop-zone p { font-size: 15px; color: #555; }
+    #drop-zone .sub { font-size: 12px; color: #999; margin-top: 6px; }
+    #file-input { display: none; }
+
+    /* ---- ファイルリスト ---- */
+    #file-list {
+      margin-top: 20px;
+      display: none;
+    }
+    #file-list h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      background: #f8fafc;
+      border-radius: 5px;
+      margin-bottom: 5px;
+      font-size: 13px;
+    }
+    .file-item .fi-icon { color: #4a90d9; font-size: 16px; }
+    .file-item .fi-name { flex: 1; color: #333; }
+    .file-item .fi-remove {
+      color: #bbb;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .file-item .fi-remove:hover { color: #e55; }
+
+    /* ---- ボタン ---- */
+    .btn-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+      align-items: center;
+    }
+    #convert-btn {
+      background: #1a6ac9;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 12px 32px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    #convert-btn:hover:not(:disabled) { background: #1458a8; }
+    #convert-btn:disabled { background: #93b8e5; cursor: not-allowed; }
+
+    #clear-btn {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 11px 20px;
+      font-size: 14px;
+      color: #666;
+      cursor: pointer;
+    }
+    #clear-btn:hover { background: #f0f0f0; }
+
+    /* ---- ローディング ---- */
+    #loading {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #1a6ac9;
+    }
+    .spinner {
+      width: 20px; height: 20px;
+      border: 3px solid #cde;
+      border-top-color: #1a6ac9;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---- 結果カード ---- */
+    #result-card { display: none; }
+
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .result-header h2 { font-size: 16px; color: #1a3a5c; }
+    .total-badge {
+      background: #1a6ac9;
+      color: #fff;
+      border-radius: 20px;
+      padding: 4px 14px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .result-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    .result-row.ok    { background: #f0faf3; }
+    .result-row.warn  { background: #fffbec; }
+    .result-row.error { background: #fff3f3; }
+    .result-row .tag {
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 3px;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+    .result-row.ok    .tag { background: #2da862; color: #fff; }
+    .result-row.warn  .tag { background: #e6a817; color: #fff; }
+    .result-row.error .tag { background: #d94040; color: #fff; }
+    .result-row .rname { flex: 1; color: #444; font-weight: 500; }
+    .result-row .detail { color: #666; }
+
+    .download-row {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #eee;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    #download-btn {
+      background: #2da862;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 11px 28px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    #download-btn:hover { background: #22875d; }
+    #download-hint { font-size: 12px; color: #888; }
+
+    /* ---- フォーマット一覧 ---- */
+    .format-list {
+      margin-top: 0;
+      font-size: 12px;
+      color: #777;
+      line-height: 1.8;
+    }
+    .format-list span { display: inline-block; margin-right: 18px; }
+    .format-list .badge {
+      background: #e8f0fb;
+      color: #1a6ac9;
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-size: 11px;
+      margin-right: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>いえらぶクラウド 消し込みCSV変換ツール</h1>
+  <p>複数の保証会社・引落データを一括でいえらぶクラウドのインポート形式に変換します</p>
+</header>
+
+<!-- アップロードカード -->
+<div class="card">
+  <div id="drop-zone">
+    <div class="icon">&#128196;</div>
+    <p>ここにファイルをドラッグ＆ドロップ</p>
+    <p class="sub">または クリックしてファイルを選択（複数可）</p>
+    <input type="file" id="file-input" multiple accept=".csv,.pdf">
+  </div>
+
+  <div id="file-list">
+    <h3>選択されたファイル</h3>
+    <div id="file-items"></div>
+  </div>
+
+  <div class="btn-row">
+    <button id="convert-btn" disabled>変換してCSVをダウンロード</button>
+    <button id="clear-btn">クリア</button>
+    <div id="loading"><div class="spinner"></div>変換中...</div>
+  </div>
+
+  <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #eee;">
+    <p style="font-size: 12px; color: #999; margin-bottom: 6px;">対応フォーマット</p>
+    <div class="format-list">
+      <span><span class="badge">CSV</span>FB引落（FB_YYYYMMDD_*.csv）</span>
+      <span><span class="badge">CSV</span>セーフティ引落（いえらふ__*.csv）</span>
+      <span><span class="badge">CSV</span>楽天保証収納（YYYYMM_*.csv）</span>
+      <span><span class="badge">CSV</span>楽天銀行全銀（*zengin*.csv）</span>
+      <span><span class="badge">PDF</span>セーフティ送金明細（セーフティ*.pdf）</span>
+      <span><span class="badge">PDF</span>集金代行/LACTii（*集金代行送金明細*.pdf / *LACTii送金明細*.pdf）</span>
+      <span><span class="badge">PDF</span>ナップ収納代行（*ナップ*.pdf）</span>
+      <span><span class="badge">PDF</span>プレミアライフ（*プレミアライフ*.pdf）</span>
+      <span><span class="badge">PDF</span>アーク定時送金（*アーク*定時送金*.pdf）</span>
+      <span><span class="badge">PDF</span>JID日本賃貸保証（*JID*SoukinMeisai.pdf）</span>
+      <span><span class="badge">PDF</span>日本賃貸住宅保証機構（*日本賃貸住宅保証機構*.pdf）</span>
+      <span><span class="badge">PDF★</span>フェア信用保証（*フェア*.pdf、スキャン）</span>
+      <span><span class="badge">PDF★</span>オリコ（*オリコ*.pdf、スキャン）</span>
+    </div>
+  </div>
+</div>
+
+<!-- 結果カード -->
+<div class="card" id="result-card">
+  <div class="result-header">
+    <h2>変換結果</h2>
+    <span class="total-badge" id="total-badge">合計 0 件</span>
+  </div>
+  <div id="result-rows"></div>
+  <div class="download-row" id="download-row" style="display:none;">
+    <button id="download-btn">&#11123; CSVをダウンロード</button>
+    <span id="download-hint"></span>
+  </div>
+</div>
+
+<script>
+  const dropZone   = document.getElementById('drop-zone');
+  const fileInput  = document.getElementById('file-input');
+  const fileItems  = document.getElementById('file-items');
+  const fileList   = document.getElementById('file-list');
+  const convertBtn = document.getElementById('convert-btn');
+  const clearBtn   = document.getElementById('clear-btn');
+  const loading    = document.getElementById('loading');
+  const resultCard = document.getElementById('result-card');
+  const resultRows = document.getElementById('result-rows');
+  const totalBadge = document.getElementById('total-badge');
+  const downloadBtn= document.getElementById('download-btn');
+  const downloadRow= document.getElementById('download-row');
+  const downloadHint=document.getElementById('download-hint');
+
+  let selectedFiles = [];
+  let csvPayload = null;
+
+  // ---- ドラッグ&ドロップ ----
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addFiles([...e.dataTransfer.files]);
+  });
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+
+  function addFiles(newFiles) {
+    newFiles.forEach(f => {
+      if (!selectedFiles.find(x => x.name === f.name && x.size === f.size)) {
+        selectedFiles.push(f);
+      }
+    });
+    renderFileList();
+  }
+
+  function renderFileList() {
+    fileItems.innerHTML = '';
+    selectedFiles.forEach((f, i) => {
+      const isPdf = f.name.toLowerCase().endsWith('.pdf');
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.innerHTML = `
+        <span class="fi-icon">${isPdf ? '📄' : '📊'}</span>
+        <span class="fi-name">${escHtml(f.name)}</span>
+        <span class="fi-remove" data-idx="${i}" title="削除">×</span>`;
+      fileItems.appendChild(div);
+    });
+    fileItems.querySelectorAll('.fi-remove').forEach(el => {
+      el.addEventListener('click', e => {
+        selectedFiles.splice(parseInt(e.target.dataset.idx), 1);
+        renderFileList();
+      });
+    });
+    fileList.style.display = selectedFiles.length ? 'block' : 'none';
+    convertBtn.disabled = selectedFiles.length === 0;
+  }
+
+  // ---- クリア ----
+  clearBtn.addEventListener('click', () => {
+    selectedFiles = [];
+    csvPayload = null;
+    renderFileList();
+    resultCard.style.display = 'none';
+    downloadRow.style.display = 'none';
+  });
+
+  // ---- 変換 ----
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFiles.length) return;
+    setLoading(true);
+    resultCard.style.display = 'none';
+    csvPayload = null;
+
+    const fd = new FormData();
+    selectedFiles.forEach(f => fd.append('files', f));
+
+    try {
+      const res  = await fetch('/convert', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      renderResults(data);
+      if (data.csv_b64) {
+        csvPayload = { b64: data.csv_b64, filename: data.filename };
+      }
+    } catch (err) {
+      alert('通信エラーが発生しました: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  });
+
+  function renderResults(data) {
+    resultRows.innerHTML = '';
+    data.results.forEach(r => {
+      const div = document.createElement('div');
+      if (r.status === 'ok') {
+        div.className = 'result-row ok';
+        div.innerHTML = `<span class="tag">OK</span>
+          <span class="rname">${escHtml(r.filename)}</span>
+          <span class="detail">${escHtml(r.format)} &nbsp;→&nbsp; <strong>${r.count} 件</strong>抽出</span>`;
+      } else if (r.status === 'unknown') {
+        div.className = 'result-row warn';
+        div.innerHTML = `<span class="tag">警告</span>
+          <span class="rname">${escHtml(r.filename)}</span>
+          <span class="detail">対応フォーマット不明 — スキップされました</span>`;
+      } else {
+        div.className = 'result-row error';
+        div.innerHTML = `<span class="tag">エラー</span>
+          <span class="rname">${escHtml(r.filename)}</span>
+          <span class="detail">${escHtml(r.message)}</span>`;
+      }
+      resultRows.appendChild(div);
+    });
+
+    totalBadge.textContent = `合計 ${data.total} 件`;
+    resultCard.style.display = 'block';
+
+    if (data.total > 0 && data.csv_b64) {
+      downloadRow.style.display = 'flex';
+      downloadHint.textContent = `出力ファイル: ${data.filename}`;
+    } else {
+      downloadRow.style.display = 'none';
+    }
+  }
+
+  // ---- ダウンロード ----
+  downloadBtn.addEventListener('click', () => {
+    if (!csvPayload) return;
+    const bytes = atob(csvPayload.b64);
+    const buf = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+    const blob = new Blob([buf], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = csvPayload.filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  function setLoading(on) {
+    loading.style.display    = on ? 'flex' : 'none';
+    convertBtn.disabled      = on || selectedFiles.length === 0;
+    clearBtn.disabled        = on;
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+</script>
+</body>
+</html>
