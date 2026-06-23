@@ -36,6 +36,12 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 # ---------------------------------------------------------------------------
 FORMAT_REGISTRY = [
     {
+        "id": "ierabu_passthrough",
+        "name": "いえらぶ形式CSV（パススルー）",
+        "match": lambda name: False,  # 内容ベースのみで判定
+        "type": "csv",
+    },
+    {
         "id": "fb",
         "name": "FB引落データ（エポス・ジェイリース等）",
         "match": lambda name: re.match(r"^FB_\d{8}_", name) is not None,
@@ -102,6 +108,12 @@ FORMAT_REGISTRY = [
         "id": "jrag_pdf",
         "name": "日本賃貸住宅保証機構 送金明細PDF",
         "match": lambda name: "日本賃貸住宅保証機構" in name and name.lower().endswith(".pdf"),
+        "type": "pdf",
+    },
+    {
+        "id": "epos_pdf",
+        "name": "エポスカード 家賃精算額一覧PDF",
+        "match": lambda name: "エポス" in name and name.lower().endswith(".pdf"),
         "type": "pdf",
     },
     {
@@ -580,6 +592,58 @@ def convert_nap_pdf(raw: bytes, filename: str) -> list[dict]:
 
 
 # ---- プレミアライフ PDF ----
+def convert_epos_pdf(raw: bytes, filename: str) -> list[dict]:
+    """エポスカード 家賃精算額一覧PDF（x座標列ベース抽出）"""
+    full_text = extract_pdf_text(raw)
+    if not (is_life_advance(full_text) or "7678903" in full_text):
+        return []
+
+    # 振込予定日
+    m_date = re.search(r'振込予定日\s+(\d{4})年(\d{2})月(\d{2})日', full_text)
+    send_date = f"{m_date.group(1)}{m_date.group(2)}{m_date.group(3)}" if m_date else ""
+
+    rows = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words()
+            # y座標でグループ化
+            row_map: dict[int, list] = {}
+            for w in words:
+                y = round(w['top'] / 10) * 10
+                row_map.setdefault(y, []).append(w)
+
+            for y in sorted(row_map):
+                row_words = sorted(row_map[y], key=lambda w: w['x0'])
+
+                # 契約番号 (XXXX-XXXXXX-XXX) が x≈355 にある行のみ
+                code_words = [w for w in row_words
+                              if re.match(r'^\d{4}-\d{6}-\d{3}$', w['text'])]
+                if not code_words:
+                    continue
+                code = code_words[0]['text']
+
+                # 契約者名: x=275〜354
+                name_parts = [w['text'] for w in row_words if 270 <= w['x0'] < 355]
+                name = " ".join(name_parts)
+
+                # 金額: x≥490、数字とカンマのみ
+                amt_words = [w for w in row_words
+                             if w['x0'] >= 490 and re.match(r'^[\d,]+$', w['text'])]
+                if not amt_words:
+                    continue
+                amount = clean_amount(amt_words[0]['text'])
+                if not amount:
+                    continue
+
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": code,
+                    "振込依頼人カナ": kanji_to_katakana(name),
+                })
+    return rows
+
+
 def convert_premialife_pdf(raw: bytes, filename: str) -> list[dict]:
     """プレミアライフ 家賃送金明細PDF"""
     full_text = extract_pdf_text(raw)
@@ -1075,6 +1139,29 @@ def convert_capco_pdf(raw: bytes, filename: str) -> list[dict]:
     return rows
 
 
+def convert_ierabu_passthrough(raw: bytes, filename: str) -> list[dict]:
+    """いえらぶ形式CSVのパススルー（勘定日が空の場合はファイル名から補完）"""
+    # ファイル名から YYYYMM を抽出して日付を補完
+    m = re.search(r'(\d{6})', filename)
+    fallback_date = (m.group(1) + "01") if m else ""
+
+    text = decode_csv_bytes(raw)
+    reader = csv.DictReader(io.StringIO(text))
+    rows = []
+    for row in reader:
+        date = row.get("勘定日", "").strip() or fallback_date
+        amount = clean_amount(row.get("金額", ""))
+        if not amount:
+            continue
+        rows.append({
+            "勘定日": date,
+            "金額": amount,
+            "振込依頼人コード": row.get("振込依頼人コード", "").strip(),
+            "振込依頼人カナ": row.get("振込依頼人カナ", "").strip(),
+        })
+    return rows
+
+
 def convert_orico_csv(raw: bytes, filename: str) -> list[dict]:
     """オリコフォレントインシュア 家賃明細CSV"""
     text = decode_csv_bytes(raw)
@@ -1120,6 +1207,8 @@ CONVERTERS = {
     "casa_pdf": convert_casa_pdf,
     "orico_csv": convert_orico_csv,
     "capco_pdf": convert_capco_pdf,
+    "ierabu_passthrough": convert_ierabu_passthrough,
+    "epos_pdf": convert_epos_pdf,
 }
 
 
@@ -1131,7 +1220,8 @@ CSV_SIGNATURES = [
     {"id": "safety_csv", "must": {"振替日", "振替内訳（賃料等）", "保証番号", "契約者名カナ", "送金先名"}},
     {"id": "fb",         "must": {"振替日", "請求額", "引落口座名義"}},
     {"id": "rakuten",    "must": {"請求年月", "賃料等", "契約者名カナ（半）"}},
-    {"id": "orico_csv",  "must": {"承認番号", "振込額", "支払日", "契約者氏名カナ", "口座番号"}},
+    {"id": "orico_csv",          "must": {"承認番号", "振込額", "支払日", "契約者氏名カナ", "口座番号"}},
+    {"id": "ierabu_passthrough", "must": {"勘定日", "金額", "振込依頼人コード", "振込依頼人カナ"}},
 ]
 
 # PDF内テキストキーワードによるフォーマット判定
@@ -1147,6 +1237,7 @@ PDF_SIGNATURES = [
     {"id": "zenhoren_pdf",  "must": ["振替精算書", "振込日", "承認番号"]},
     {"id": "fourseasons_pdf","must": ["フォーシーズ", "集金代行区"]},
     {"id": "casa_pdf",      "must": ["リコーリース", "送金金額", "口座名義人"]},
+    {"id": "epos_pdf",      "must": ["株式会社エポスカード", "振込予定日", "契約番号"]},
 ]
 
 FMT_BY_ID = {fmt["id"]: fmt for fmt in FORMAT_REGISTRY}
