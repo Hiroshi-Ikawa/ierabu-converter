@@ -258,6 +258,13 @@
     <div id="file-items"></div>
   </div>
 
+  <div style="margin-top: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+    <label for="fallback-date" style="font-size: 13px; color: #555; white-space: nowrap;">勘定日補完（空欄の場合に使用）</label>
+    <input type="date" id="fallback-date"
+      style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; color: #333;">
+    <span style="font-size: 12px; color: #999;">日付が取得できなかった行に自動入力されます</span>
+  </div>
+
   <div class="btn-row">
     <button id="convert-btn" disabled>変換してCSVをダウンロード</button>
     <button id="clear-btn">クリア</button>
@@ -382,6 +389,8 @@
 
     const fd = new FormData();
     selectedFiles.forEach(f => fd.append('files', f));
+    const fallbackDate = document.getElementById('fallback-date').value;
+    if (fallbackDate) fd.append('fallback_date', fallbackDate.replace(/-/g, ''));
 
     try {
       const res  = await fetch('/convert', { method: 'POST', body: fd });

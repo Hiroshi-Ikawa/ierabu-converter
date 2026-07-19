@@ -1297,6 +1297,8 @@ def convert():
     if not files:
         return jsonify({"error": "ファイルが選択されていません"}), 400
 
+    fallback_date = request.form.get("fallback_date", "").strip()
+
     all_rows: list[dict] = []
     results: list[dict] = []
 
@@ -1328,6 +1330,12 @@ def convert():
                 "status": "error",
                 "message": str(e),
             })
+
+    # 勘定日が空の行にフォールバック日付を補完
+    if fallback_date:
+        for row in all_rows:
+            if not row.get("勘定日"):
+                row["勘定日"] = fallback_date
 
     # 出力 CSV 生成（UTF-8 BOM付き）
     output = io.StringIO()
