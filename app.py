@@ -1275,6 +1275,11 @@ def detect_format_from_content(raw: bytes, filename: str) -> dict | None:
 
 def detect_format(filename: str, raw: bytes | None = None) -> dict | None:
     name_nfc = unicodedata.normalize("NFC", filename)
+    # CSVはコンテンツ優先（ファイル名の誤検知を防ぐ）
+    if raw is not None and name_nfc.lower().endswith(".csv"):
+        content_fmt = detect_format_from_content(raw, filename)
+        if content_fmt is not None:
+            return content_fmt
     for fmt in FORMAT_REGISTRY:
         if fmt["match"](name_nfc):
             return fmt
