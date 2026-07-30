@@ -207,7 +207,7 @@ def is_life_advance(text: str) -> bool:
 
 
 def decode_csv_bytes(raw: bytes) -> str:
-    for enc in ("shift_jis", "cp932", "utf-8-sig", "utf-8"):
+    for enc in ("utf-8-sig", "shift_jis", "cp932", "utf-8"):
         try:
             return raw.decode(enc)
         except (UnicodeDecodeError, LookupError):
