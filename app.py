@@ -947,9 +947,10 @@ def convert_zenhoren_pdf(raw: bytes, filename: str) -> list[dict]:
     for row in all_table_rows:
         if len(row) < 10:
             continue
-        if row[8] != "口座振替" or row[9] != "○":
+        if row[8] != "口座振替":
             continue
-        amount = clean_amount(row[7])  # 振込額
+        # 振込額(row[7])が0の場合（未振替等）は請求合計額(row[4])を使用
+        amount = clean_amount(row[7]) or clean_amount(row[4])
         if not amount:
             continue
         rows.append({
