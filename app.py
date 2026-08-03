@@ -141,6 +141,12 @@ FORMAT_REGISTRY = [
         "type": "csv",
     },
     {
+        "id": "jray_pdf",
+        "name": "ジェイリース 振替精算書PDF",
+        "match": lambda name: "ジェイリース" in name and name.lower().endswith(".pdf"),
+        "type": "pdf",
+    },
+    {
         "id": "zenhoren_pdf",
         "name": "全保連 振替精算書PDF",
         "match": lambda name: "reportpdf_exchangeadjust" in name and name.lower().endswith(".pdf"),
@@ -924,6 +930,70 @@ def convert_orico_pdf(raw: bytes, filename: str) -> list[dict]:
     return rows
 
 
+def convert_jray_pdf(raw: bytes, filename: str) -> list[dict]:
+    """ジェイリース 振替精算書PDF"""
+    if not PDF_AVAILABLE:
+        raise RuntimeError("pdfplumber がインストールされていません")
+    full_text = extract_pdf_text(raw)
+    if not (is_life_advance(full_text) or "7678903" in full_text):
+        return []
+    m = re.search(r'資金送金日\s+(\d{4})/(\d{2})/(\d{2})', full_text)
+    send_date = f"{m.group(1)}{m.group(2)}{m.group(3)}" if m else ""
+    rows = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words()
+            row_map: dict[int, list] = {}
+            for w in words:
+                y = round(w['top'])
+                row_map.setdefault(y, []).append(w)
+            sorted_ys = sorted(row_map.keys())
+            for y in sorted_ys:
+                if y < 115:
+                    continue
+                row_words = row_map[y]
+                # 振込額列(x≥770)に数値があるかチェック
+                amount_words = [w for w in row_words if w['x0'] >= 770
+                                and re.match(r'^[\d,]+$', w['text'])]
+                if not amount_words:
+                    continue
+                amount = clean_amount(amount_words[0]['text'])
+                if not amount:
+                    continue
+                # 左端(x<50)が号室番号（数字のみ）ならサブ行→スキップ
+                left_words = [w for w in row_words if w['x0'] < 50]
+                if left_words and all(re.match(r'^\d+$', w['text']) for w in left_words):
+                    continue
+                # 名前列(x=176~238)は±2px隣行も含めて探す（名前と金額でyが1px違う）
+                main_name_words = []
+                for ny in sorted_ys:
+                    if abs(ny - y) <= 2 and ny >= 115:
+                        main_name_words += [w for w in row_map[ny] if 176 <= w['x0'] < 238]
+                if not main_name_words:
+                    continue
+                # 名前が数字のみ（集計行）はスキップ
+                name_raw = " ".join(w['text'] for w in main_name_words)
+                if not re.search(r'[^\d,\s]', name_raw):
+                    continue
+                # サブ行（名前y+8〜+18）から名前の続きを補完（メイン行の後に追加）
+                name_y = round(main_name_words[0]['top'])
+                sub_name_words = []
+                for sub_y in sorted_ys:
+                    if 8 <= sub_y - name_y <= 18:
+                        sub_name_words = [w for w in row_map[sub_y] if 176 <= w['x0'] < 238]
+                        break
+                name = " ".join(w['text'] for w in
+                                sorted(main_name_words, key=lambda w: w['x0']) +
+                                sorted(sub_name_words, key=lambda w: w['x0']))
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": "",
+                    "振込依頼人カナ": kanji_to_katakana(name),
+                })
+    return rows
+
+
 def convert_zenhoren_pdf(raw: bytes, filename: str) -> list[dict]:
     """全保連 振替精算書PDF"""
     _full = extract_pdf_text(raw)
@@ -1203,6 +1273,7 @@ CONVERTERS = {
     "jrag_pdf": convert_jrag_pdf,
     "fair_pdf": convert_fair_pdf,
     "orico_pdf": convert_orico_pdf,
+    "jray_pdf": convert_jray_pdf,
     "zenhoren_pdf": convert_zenhoren_pdf,
     "fourseasons_pdf": convert_fourseasons_pdf,
     "casa_pdf": convert_casa_pdf,
@@ -1235,6 +1306,7 @@ PDF_SIGNATURES = [
     {"id": "jid_pdf",        "must": ["送金予定明細表", "保証番号"]},
     {"id": "jrag_pdf",       "must": ["日本賃貸住宅保証機構"]},
     {"id": "safety_pdf",     "must": ["日本セーフティー", "送金明細"]},
+    {"id": "jray_pdf",      "must": ["ジェイリース", "資金送金日", "振替精算書"]},
     {"id": "zenhoren_pdf",  "must": ["振替精算書", "振込日", "承認番号"]},
     {"id": "fourseasons_pdf","must": ["フォーシーズ", "集金代行区"]},
     {"id": "casa_pdf",      "must": ["リコーリース", "送金金額", "口座名義人"]},
