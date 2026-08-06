@@ -952,17 +952,24 @@ def convert_jray_pdf(raw: bytes, filename: str) -> list[dict]:
                 if y < 115:
                     continue
                 row_words = row_map[y]
-                # 振込額列(x≥770)に数値があるかチェック
-                amount_words = [w for w in row_words if w['x0'] >= 770
-                                and re.match(r'^[\d,]+$', w['text'])]
-                if not amount_words:
-                    continue
-                amount = clean_amount(amount_words[0]['text'])
-                if not amount:
+                # 振込額列(x≥770)があれば行検知に使う（0は除く）
+                detect_words = [w for w in row_words if w['x0'] >= 770
+                                and re.match(r'^[\d,]+$', w['text'])
+                                and clean_amount(w['text'])]
+                if not detect_words:
                     continue
                 # 左端(x<50)が号室番号（数字のみ）ならサブ行→スキップ
                 left_words = [w for w in row_words if w['x0'] < 50]
                 if left_words and all(re.match(r'^\d+$', w['text']) for w in left_words):
+                    continue
+                # 請求額列(x=238~265)から±2px以内で取得
+                req_words = []
+                for ny in sorted_ys:
+                    if abs(ny - y) <= 2 and ny >= 115:
+                        req_words += [w for w in row_map[ny] if 238 <= w['x0'] < 265
+                                      and re.match(r'^[\d,]+$', w['text'])]
+                amount = clean_amount(req_words[0]['text']) if req_words else None
+                if not amount:
                     continue
                 # 名前列(x=176~238)は±2px隣行も含めて探す（名前と金額でyが1px違う）
                 main_name_words = []
