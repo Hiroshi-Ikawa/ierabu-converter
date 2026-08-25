@@ -131,7 +131,8 @@ FORMAT_REGISTRY = [
     {
         "id": "capco_pdf",
         "name": "CAPCOエージェンシー お支払明細書PDF（スキャン）",
-        "match": lambda name: re.match(r'^\d{14}\.pdf$', name) is not None,
+        "match": lambda name: (re.match(r'^\d{14}\.pdf$', name) is not None
+                               or ("CAPCO" in name and name.lower().endswith(".pdf"))),
         "type": "pdf",
     },
     {
@@ -1157,23 +1158,39 @@ def convert_capco_pdf(raw: bytes, filename: str) -> list[dict]:
             if "7678903" not in all_text:
                 continue
 
-            # 日付: 精算日 "226年 5月21" → 2026年5月21日 (OCR誤認識の3桁年を補正)
-            send_date = ""
-            for m in re.finditer(r'(\d{2,4})年\s*(\d{1,2})[月目]\s*(\d{1,2})', all_text):
-                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            def _fix_ocr_year(y: int) -> int | None:
+                """OCR誤認識の年を補正（3桁・4桁ともに対応）"""
+                if 2020 <= y <= 2040:
+                    return y
                 if 100 <= y <= 299:
-                    y = 2000 + (y % 100)
-                if 2020 <= y <= 2040 and 1 <= mo <= 12 and 1 <= d <= 31:
+                    return 2000 + (y % 100)
+                # 4桁で"0"が"9"に誤認識された場合 (2026→2926, 2036→2936 等)
+                s = str(y)
+                for pos in range(len(s)):
+                    if s[pos] == '9':
+                        cand = int(s[:pos] + '0' + s[pos+1:])
+                        if 2020 <= cand <= 2040:
+                            return cand
+                return None
+
+            # OCRテキスト正規化: "g月"→"8月"（8がgに誤読される）
+            date_text = all_text.replace('g月', '8月').replace('G月', '8月')
+
+            # 日付: 精算日 "226年 5月21" → 2026年5月21日 (OCR誤認識の3桁/4桁年を補正)
+            send_date = ""
+            for m in re.finditer(r'(\d{2,4})年\s*(\d{1,2})[月目]\s*(\d{1,2})', date_text):
+                y = _fix_ocr_year(int(m.group(1)))
+                mo, d = int(m.group(2)), int(m.group(3))
+                if y and 1 <= mo <= 12 and 1 <= d <= 31:
                     send_date = f"{y}{mo:02d}{d:02d}"
                     break
             if not send_date:
-                # 支払月フォールバック: "2026年6月分" → 20260601
-                m2 = re.search(r'(\d{2,4})年\s*(\d{1,2})[月目]', all_text)
+                # 支払月フォールバック: "2026年8月分" → 20260801
+                m2 = re.search(r'(\d{2,4})年\s*(\d{1,2})[月目]', date_text)
                 if m2:
-                    y, mo = int(m2.group(1)), int(m2.group(2))
-                    if 100 <= y <= 299:
-                        y = 2000 + (y % 100)
-                    if 2020 <= y <= 2040 and 1 <= mo <= 12:
+                    y = _fix_ocr_year(int(m2.group(1)))
+                    mo = int(m2.group(2))
+                    if y and 1 <= mo <= 12:
                         send_date = f"{y}{mo:02d}01"
 
             # 管理番号: ページ上部(y<800)の右端にある4〜8桁の数字
