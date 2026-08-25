@@ -1136,8 +1136,8 @@ def convert_casa_pdf(raw: bytes, filename: str) -> list[dict]:
 
 def convert_capco_pdf(raw: bytes, filename: str) -> list[dict]:
     """CAPCOエージェンシー お支払明細書PDF（スキャン、300DPI OCR）"""
+    reader = get_ocr_reader()  # OCR未インストール時はここで RuntimeError
     import numpy as np
-    reader = get_ocr_reader()
     rows = []
 
     with pdfplumber.open(io.BytesIO(raw)) as pdf:
