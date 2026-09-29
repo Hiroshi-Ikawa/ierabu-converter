@@ -123,6 +123,12 @@ FORMAT_REGISTRY = [
         "type": "pdf",
     },
     {
+        "id": "orico_karntame_pdf",
+        "name": "オリコ 家賃明細PDF",
+        "match": lambda name: "オリコ" in name and "家賃明細" in name and name.lower().endswith(".pdf"),
+        "type": "pdf",
+    },
+    {
         "id": "orico_pdf",
         "name": "オリコフォレントインシュア PDF（スキャン）",
         "match": lambda name: "オリコ" in name and name.lower().endswith(".pdf"),
@@ -829,9 +835,78 @@ def convert_jrag_pdf(raw: bytes, filename: str) -> list[dict]:
     return rows
 
 
-# ---- フェア信用保証 PDF (スキャン、OCR) ----
+# ---- フェア信用保証 PDF ----
 def convert_fair_pdf(raw: bytes, filename: str) -> list[dict]:
-    """フェア信用保証 収納代行送金完了書PDF（スキャン画像、OCR使用）"""
+    """フェア信用保証 収納代行送金完了書PDF（テキスト型 or スキャンOCR）"""
+    rows = _convert_fair_pdf_text(raw)
+    if not rows:
+        rows = _convert_fair_pdf_ocr(raw)
+    return rows
+
+
+def _convert_fair_pdf_text(raw: bytes) -> list[dict]:
+    """フェア信用保証 テキスト型PDF用"""
+    rows = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            if not (is_life_advance(text) or "7678903" in text or "フェア" in text):
+                continue
+
+            # 送金日: 令和X年M月D日
+            send_date = ""
+            m = re.search(r'令和(\d+)年(\d{1,2})月(\d{1,2})日', text)
+            if m:
+                reiwa = int(m.group(1))
+                send_date = f"{reiwa+2018}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+
+            words = page.extract_words()
+            row_map: dict[int, list] = {}
+            for w in words:
+                y = round(w['top'])
+                row_map.setdefault(y, []).append(w)
+
+            sorted_ys = sorted(row_map.keys())
+            for y in sorted_ys:
+                row_words = row_map[y]
+                row_text = " ".join(w['text'] for w in row_words)
+
+                # 承認番号パターン（XX-XXXXXX）
+                code_m = re.search(r'(\d{2}-\d{5,7})', row_text)
+                if not code_m:
+                    continue
+                code = code_m.group(1)
+
+                # ±2px 隣行も含めた全ワード
+                nearby = [w for ny in sorted_ys if abs(ny - y) <= 2
+                          for w in row_map[ny]]
+
+                # 振込額: x≈520-560
+                amount_words = [w for w in nearby if 515 <= w['x0'] <= 565
+                                and clean_amount(w['text'])]
+                if not amount_words:
+                    continue
+                amount = clean_amount(amount_words[0]['text'])
+                if not amount:
+                    continue
+
+                # 賃借人名: x=270-370（用途列x≈376より左）、±2px隣行も対象
+                name_words = [w for w in nearby if 270 <= w['x0'] < 370
+                              and w['text'] not in ("様",)]
+                name = " ".join(w['text'] for w in sorted(name_words, key=lambda w: w['x0']))
+                name = name.replace("様", "").strip()
+
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": code,
+                    "振込依頼人カナ": kanji_to_katakana(name),
+                })
+    return rows
+
+
+def _convert_fair_pdf_ocr(raw: bytes) -> list[dict]:
+    """フェア信用保証 スキャンPDF用OCRフォールバック（ローカル専用）"""
     pages = ocr_pdf_pages(raw)
     send_date = ""
     rows = []
@@ -840,11 +915,7 @@ def convert_fair_pdf(raw: bytes, filename: str) -> list[dict]:
         all_text = " ".join(w[2] for w in sorted(page_words, key=lambda w: w[1]))
         if not (is_life_advance(all_text) or "7678903" in all_text):
             continue
-        # 送金日（令和年 or 西暦）
         if not send_date:
-            sorted_words = sorted(page_words, key=lambda w: w[1])
-            all_text = " ".join(w[2] for w in sorted_words)
-            # 令和X年M月D日
             m = re.search(r'令和.{0,2}(\d+)年.{0,2}(\d{1,2}).{0,2}月.{0,2}(\d{1,2})', all_text)
             if m:
                 try:
@@ -856,18 +927,12 @@ def convert_fair_pdf(raw: bytes, filename: str) -> list[dict]:
             if not send_date:
                 send_date = _extract_date_from_ocr(page_words)
 
-        # y座標でグループ化
-        row_groups = group_ocr_by_row(page_words, y_tol=20)
-
-        for row_words in row_groups:
+        for row_words in group_ocr_by_row(page_words, y_tol=20):
             row_text = " ".join(w[2] for w in row_words)
-            # 承認番号パターン（02-XXXXXX）
             code_m = re.search(r'(\d{2}-\d{5,7})', row_text)
             if not code_m:
                 continue
             code = code_m.group(1)
-
-            # 金額：右側（x>800）の最大値
             amount_words = [(w[0], w[2]) for w in row_words
                            if w[0] > 800 and clean_amount(w[2]) is not None]
             if not amount_words:
@@ -875,11 +940,8 @@ def convert_fair_pdf(raw: bytes, filename: str) -> list[dict]:
             amount = clean_amount(sorted(amount_words)[-1][1])
             if amount is None or amount < 1000:
                 continue
-
-            # 契約者名（中央x=400-700付近）
             name_words = [w[2] for w in row_words if 300 < w[0] < 750]
             name = " ".join(name_words).replace("様", "").strip()
-
             rows.append({
                 "勘定日": send_date,
                 "金額": amount,
@@ -887,6 +949,56 @@ def convert_fair_pdf(raw: bytes, filename: str) -> list[dict]:
                 "振込依頼人カナ": kanji_to_katakana(name),
             })
 
+    return rows
+
+
+# ---- オリコ 家賃明細PDF (テキスト型) ----
+def convert_orico_karntame_pdf(raw: bytes, filename: str) -> list[dict]:
+    """オリコ 家賃明細PDF（テキスト型）"""
+    rows = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words()
+            row_map: dict[int, list] = {}
+            for w in words:
+                y = round(w['top'])
+                row_map.setdefault(y, []).append(w)
+
+            for y in sorted(row_map.keys()):
+                row_words = row_map[y]
+
+                # 振込額: x≈545-590の数字（管理費x≈464、小計x≈536より右）
+                amount_words = [w for w in row_words
+                                if 545 <= w['x0'] <= 590
+                                and re.match(r'^\d+$', w['text'])]
+                if not amount_words:
+                    continue
+                amount = clean_amount(amount_words[0]['text'])
+                if not amount:
+                    continue
+
+                # 支払日: x>=595のワード末尾8桁
+                date_words = [w for w in row_words if w['x0'] >= 595]
+                send_date = ""
+                for dw in sorted(date_words, key=lambda w: w['x0']):
+                    m = re.search(r'(\d{8})$', dw['text'])
+                    if m:
+                        send_date = m.group(1)
+                        break
+
+                # カナ: x=275-490のテキストからカタカナのみ抽出
+                name_words = [w for w in row_words if 275 <= w['x0'] <= 490]
+                combined = "".join(w['text'] for w in sorted(name_words, key=lambda w: w['x0']))
+                kana = re.sub(r'[^゠-ヿ]', '', combined).strip()
+                if not kana:
+                    continue
+
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": "",
+                    "振込依頼人カナ": kana,
+                })
     return rows
 
 
@@ -1041,7 +1153,7 @@ def convert_zenhoren_pdf(raw: bytes, filename: str) -> list[dict]:
 
 
 def convert_fourseasons_pdf(raw: bytes, filename: str) -> list[dict]:
-    """フォーシーズ 集金代行PDF"""
+    """フォーシーズ 集金代行PDF（テキスト抽出 or スキャンOCR）"""
     rows = []
     with pdfplumber.open(io.BytesIO(raw)) as pdf:
         for page in pdf.pages:
@@ -1070,6 +1182,90 @@ def convert_fourseasons_pdf(raw: bytes, filename: str) -> list[dict]:
                         "振込依頼人コード": code,
                         "振込依頼人カナ": kana,
                     })
+
+    # スキャンPDFのフォールバック: テキスト抽出が0件の場合OCRを試みる
+    if not rows:
+        rows = _convert_fourseasons_ocr(raw)
+
+    return rows
+
+
+def _convert_fourseasons_ocr(raw: bytes) -> list[dict]:
+    """フォーシーズ スキャンPDF用OCRコンバーター（ローカル専用）"""
+    reader = get_ocr_reader()  # OCR未インストール時はここで RuntimeError
+    import numpy as np
+    rows = []
+
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            img = page.to_image(resolution=300)
+            arr = np.array(img.original)
+            results = reader.readtext(arr, detail=1)
+            all_words = sorted(
+                [(float(bbox[0][0]), float(bbox[0][1]), text, float(conf))
+                 for bbox, text, conf in results],
+                key=lambda w: w[1]
+            )
+            all_text = " ".join(w[2] for w in all_words)
+            # ライフアドバンス口座(7678903)があるページのみ処理
+            if not (is_life_advance(all_text) or "7678903" in all_text):
+                continue
+
+            page_words = [w for w in all_words if w[3] > 0.3]
+
+            # "YYYY-" アンカー（年部分、x<250の左端列）を検出して行単位に分割
+            anchors = [w for w in page_words
+                       if re.match(r'^\d{4}-$', w[2]) and w[0] < 250]
+            if not anchors:
+                continue
+
+            for i, anchor in enumerate(anchors):
+                anchor_y = anchor[1]
+                year_str = anchor[2][:4]
+                next_y = anchors[i + 1][1] if i + 1 < len(anchors) else anchor_y + 120
+
+                row_words = [w for w in page_words
+                             if anchor_y - 5 <= w[1] <= next_y - 5]
+
+                # 月: x≈120-230, 2桁数字
+                month_words = [w for w in row_words
+                               if 120 <= w[0] <= 230 and re.match(r'^\d{2}$', w[2])]
+                month_str = month_words[0][2] if month_words else "01"
+                send_date = f"{year_str}{month_str}01"
+
+                # 契約番号: x≈750-1000, 8桁数字
+                code_words = [w for w in row_words
+                              if 750 <= w[0] <= 1000 and re.match(r'^\d{8}$', w[2])]
+                code = code_words[0][2] if code_words else ""
+
+                # 入金額: 最右のx≥1500, 数字+カンマ
+                amount_words = [w for w in row_words
+                                if w[0] >= 1500 and re.match(r'^\d[\d,]+$', w[2])]
+                if not amount_words:
+                    continue
+                amount_word = max(amount_words, key=lambda w: w[0])
+                amount = clean_amount(amount_word[2])
+                if not amount:
+                    continue
+
+                # 契約者名: x≥500, 非数字/カンマ、既知ノイズを除外
+                name_words = [w for w in row_words
+                              if w[0] >= 500
+                              and not re.match(r'^[\d,]+$', w[2])
+                              and not re.match(r'^\d{8}$', w[2])
+                              and w[2] not in ("ン", "口座振替")
+                              and "楽天" not in w[2]]
+                name_raw = " ".join(w[2] for w in sorted(name_words, key=lambda w: w[0]))
+                if not name_raw.strip():
+                    continue
+
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": code,
+                    "振込依頼人カナ": kanji_to_katakana(name_raw),
+                })
+
     return rows
 
 
@@ -1296,6 +1492,7 @@ CONVERTERS = {
     "jid_pdf": convert_jid_pdf,
     "jrag_pdf": convert_jrag_pdf,
     "fair_pdf": convert_fair_pdf,
+    "orico_karntame_pdf": convert_orico_karntame_pdf,
     "orico_pdf": convert_orico_pdf,
     "jray_pdf": convert_jray_pdf,
     "zenhoren_pdf": convert_zenhoren_pdf,
