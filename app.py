@@ -171,6 +171,12 @@ FORMAT_REGISTRY = [
         "match": lambda name: "カーサ" in name and name.lower().endswith(".pdf"),
         "type": "pdf",
     },
+    {
+        "id": "yucent_pdf",
+        "name": "ユウセントラスト/新日本信用保証 収納代行PDF",
+        "match": lambda name: "ユウセントラスト" in name and name.lower().endswith(".pdf"),
+        "type": "pdf",
+    },
 ]
 
 
@@ -1330,6 +1336,66 @@ def convert_casa_pdf(raw: bytes, filename: str) -> list[dict]:
     return rows
 
 
+def convert_yucent_pdf(raw: bytes, filename: str) -> list[dict]:
+    """ユウセントラスト/新日本信用保証 収納代行PDF"""
+    rows = []
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            if not (is_life_advance(text) or "7678903" in text or "新日本信用保証" in text):
+                continue
+
+            # 令和X年YY月度 → 月初日を勘定日に
+            send_date = ""
+            m = re.search(r'令\s*和\s*(\d+)\s*年\s*(\d{1,2})\s*月', text)
+            if m:
+                reiwa, month = int(m.group(1)), int(m.group(2))
+                send_date = f"{reiwa + 2018}{month:02d}01"
+
+            words = page.extract_words()
+            row_map: dict[int, list] = {}
+            for w in words:
+                y = round(w['top'])
+                row_map.setdefault(y, []).append(w)
+
+            for y in sorted(row_map.keys()):
+                row_words = row_map[y]
+
+                # 顧客番号: XXXX-XX-XXXXXX
+                code_words = [w for w in row_words
+                              if re.match(r'^\d{4}-\d{2}-\d{6}$', w['text'])]
+                if not code_words:
+                    continue
+                code = code_words[0]['text']
+
+                # 送金先名義+送金額が合体したワード (x≈376, ¥含む)
+                merged_words = [w for w in row_words
+                                if w['x0'] >= 370 and '¥' in w['text']]
+                if not merged_words:
+                    continue
+                merged_text = merged_words[0]['text']
+                yen_pos = merged_text.index('¥')
+                after_yen = merged_text[yen_pos + 1:]
+                amount_str = re.sub(r'[^\d,]', '', after_yen)
+                amount = clean_amount(amount_str)
+                if not amount:
+                    continue
+
+                # 賃借人氏名: x=130-240（様を除く）
+                name_words = [w for w in row_words
+                              if 130 <= w['x0'] <= 240 and w['text'] != "様"]
+                name = " ".join(w['text'] for w in sorted(name_words, key=lambda w: w['x0']))
+                name = name.replace("様", "").strip()
+
+                rows.append({
+                    "勘定日": send_date,
+                    "金額": amount,
+                    "振込依頼人コード": code,
+                    "振込依頼人カナ": kanji_to_katakana(name),
+                })
+    return rows
+
+
 def convert_capco_pdf(raw: bytes, filename: str) -> list[dict]:
     """CAPCOエージェンシー お支払明細書PDF（スキャン、300DPI OCR）"""
     reader = get_ocr_reader()  # OCR未インストール時はここで RuntimeError
@@ -1498,6 +1564,7 @@ CONVERTERS = {
     "zenhoren_pdf": convert_zenhoren_pdf,
     "fourseasons_pdf": convert_fourseasons_pdf,
     "casa_pdf": convert_casa_pdf,
+    "yucent_pdf": convert_yucent_pdf,
     "orico_csv": convert_orico_csv,
     "capco_pdf": convert_capco_pdf,
     "ierabu_passthrough": convert_ierabu_passthrough,
@@ -1531,6 +1598,7 @@ PDF_SIGNATURES = [
     {"id": "zenhoren_pdf",  "must": ["振替精算書", "振込日", "承認番号"]},
     {"id": "fourseasons_pdf","must": ["フォーシーズ", "集金代行区"]},
     {"id": "casa_pdf",      "must": ["リコーリース", "送金金額", "口座名義人"]},
+    {"id": "yucent_pdf",   "must": ["新日本信用保証", "送金合計額", "顧客番号"]},
     {"id": "epos_pdf",      "must": ["株式会社エポスカード", "振込予定日", "契約番号"]},
 ]
 
