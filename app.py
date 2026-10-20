@@ -973,13 +973,13 @@ def convert_orico_karntame_pdf(raw: bytes, filename: str) -> list[dict]:
             for y in sorted(row_map.keys()):
                 row_words = row_map[y]
 
-                # 振込額: x≈545-590の数字（管理費x≈464、小計x≈536より右）
+                # 振込額: x≈545-615の数字、複数ある場合は最右（一番右が振込額）
                 amount_words = [w for w in row_words
-                                if 545 <= w['x0'] <= 590
+                                if 545 <= w['x0'] <= 615
                                 and re.match(r'^\d+$', w['text'])]
                 if not amount_words:
                     continue
-                amount = clean_amount(amount_words[0]['text'])
+                amount = clean_amount(max(amount_words, key=lambda w: w['x0'])['text'])
                 if not amount:
                     continue
 
